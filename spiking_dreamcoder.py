@@ -92,16 +92,9 @@ class StrictResonatorLayer(nn.Module):
         spikes_history = []
         u_pre_history = []
 
-        # Контексты LoRA: активируем адаптер, если соответствующий канал дал спайк
-        lora_context = {}
-        for c_str in self.lora_u.keys():
-            c = int(c_str)
-            if c < x_seq.shape[2]:
-                lora_context[c_str] = (x_seq[:, :, c].sum(dim=1) > 0).float()
-                if lora_context[c_str].sum() > 0 and not self.training:
-                    print(f"CRITICAL WARNING: lora_context[{c_str}] is > 0 for eval sequence!")
-            else:
-                lora_context[c_str] = torch.zeros(batch_size, device=device)
+        # Инициализируем следы активности для каждого LoRA адаптера
+        lora_traces = {c_str: torch.zeros(batch_size, 1, device=device) for c_str in self.lora_u.keys()}
+        decay_trace = 0.6  # Быстрое затухание следа
 
         for t in range(time_steps):
             x_t = x_seq[:, t, :]
@@ -109,13 +102,25 @@ class StrictResonatorLayer(nn.Module):
             # Базовый рекуррентный отклик
             rec_current = self.w_rec(s)
             
-            # Активация адаптеров LoRA
+            # Активация адаптеров LoRA с использованием синаптического следа
             for c_str in self.lora_u.keys():
-                ctx = lora_context[c_str].unsqueeze(-1) # [batch_size, 1]
+                c = int(c_str)
+                # 1. Обновляем след присутствия символа:
+                if c < x_seq.shape[2]:
+                    spike_c_now = x_t[:, c].unsqueeze(-1)
+                else:
+                    spike_c_now = torch.zeros(batch_size, 1, device=device)
+                    
+                lora_traces[c_str] = decay_trace * lora_traces[c_str] + spike_c_now
+                
+                # 2. Локальный контекст: активен ТОЛЬКО пока жив след спайка (порог 0.05)
+                local_ctx = (lora_traces[c_str] > 0.05).float()
+                
+                # 3. LoRA применяется строго модулированная локальным следом
                 lora_u_val = self.lora_u[c_str] # [rank, 16]
                 lora_v_val = self.lora_v[c_str] # [16, rank]
                 lora_stim = (s @ lora_v_val) @ lora_u_val # [batch_size, 16]
-                rec_current = rec_current + ctx * lora_stim
+                rec_current = rec_current + local_ctx * lora_stim
                 
             # Ток = входной сигнал + рекуррентный отклик от прошлых спайков + LoRA
             current = self.w_in(x_t) + rec_current
