@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.pyc
+
+# TensorBoard & Experiment Logs
+runs/
+*.tfevents.*
+snn_comparison.png
+
+# Checkpoints
+*.pt
+*.pth
