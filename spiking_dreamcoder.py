@@ -92,9 +92,18 @@ class StrictResonatorLayer(nn.Module):
         spikes_history = []
         u_pre_history = []
 
-        # Инициализируем следы активности для каждого LoRA адаптера
-        lora_traces = {c_str: torch.zeros(batch_size, 1, device=device) for c_str in self.lora_u.keys()}
-        decay_trace = 0.6  # Быстрое затухание следа
+        # -------------------------------------------------------------
+        # Vectorized LoRA Initialization
+        # -------------------------------------------------------------
+        num_concepts = len(self.lora_u)
+        has_lora = num_concepts > 0
+        if has_lora:
+            active_c_indices = torch.tensor([int(c) for c in self.lora_u.keys()], device=device)
+            # Stack weights to [num_concepts, rank, hidden] and [num_concepts, hidden, rank]
+            U = torch.stack(list(self.lora_u.values()), dim=0)
+            V = torch.stack(list(self.lora_v.values()), dim=0)
+            lora_traces = torch.zeros(batch_size, num_concepts, device=device)
+            decay_trace = 0.6  # Быстрое затухание следа
 
         for t in range(time_steps):
             x_t = x_seq[:, t, :]
@@ -102,25 +111,32 @@ class StrictResonatorLayer(nn.Module):
             # Базовый рекуррентный отклик
             rec_current = self.w_rec(s)
             
-            # Активация адаптеров LoRA с использованием синаптического следа
-            for c_str in self.lora_u.keys():
-                c = int(c_str)
+            # Активация адаптеров LoRA с использованием синаптического следа (Векторизованно)
+            if has_lora:
+                max_c = x_t.shape[1]
+                valid_mask = active_c_indices < max_c
+                valid_indices = active_c_indices[valid_mask]
+                
+                spikes_c = torch.zeros(batch_size, num_concepts, device=device)
+                if len(valid_indices) > 0:
+                    spikes_c[:, valid_mask] = x_t[:, valid_indices]
+                
                 # 1. Обновляем след присутствия символа:
-                if c < x_seq.shape[2]:
-                    spike_c_now = x_t[:, c].unsqueeze(-1)
-                else:
-                    spike_c_now = torch.zeros(batch_size, 1, device=device)
-                    
-                lora_traces[c_str] = decay_trace * lora_traces[c_str] + spike_c_now
+                lora_traces = decay_trace * lora_traces + spikes_c
                 
                 # 2. Локальный контекст: активен ТОЛЬКО пока жив след спайка (порог 0.05)
-                local_ctx = (lora_traces[c_str] > 0.05).float()
+                local_ctx = (lora_traces > 0.05).float() # [batch_size, num_concepts]
                 
                 # 3. LoRA применяется строго модулированная локальным следом
-                lora_u_val = self.lora_u[c_str] # [rank, 16]
-                lora_v_val = self.lora_v[c_str] # [16, rank]
-                lora_stim = (s @ lora_v_val) @ lora_u_val # [batch_size, 16]
-                rec_current = rec_current + local_ctx * lora_stim
+                # s: [batch_size, hidden]
+                # V: [num_concepts, hidden, rank]
+                # U: [num_concepts, rank, hidden]
+                s_V = torch.einsum('bh,chr->bcr', s, V)
+                s_V_U = torch.einsum('bcr,crk->bck', s_V, U)
+                
+                # Взвешиваем и суммируем
+                lora_stim_total = torch.sum(local_ctx.unsqueeze(2) * s_V_U, dim=1) # [batch_size, hidden]
+                rec_current = rec_current + lora_stim_total
                 
             # Ток = входной сигнал + рекуррентный отклик от прошлых спайков + LoRA
             current = self.w_in(x_t) + rec_current

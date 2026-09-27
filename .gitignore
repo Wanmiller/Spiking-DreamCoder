@@ -1,12 +1,16 @@
+# Logs
+out_*.txt
+*.log
+
+# PyTorch
+*.pt
+*.pth
+
 # Python
 __pycache__/
 *.pyc
 
-# TensorBoard & Experiment Logs
-runs/
-*.tfevents.*
-snn_comparison.png
-
-# Checkpoints
-*.pt
-*.pth
+# Virtual environments
+venv/
+env/
+.env/

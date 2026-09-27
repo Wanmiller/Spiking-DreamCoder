@@ -147,12 +147,41 @@ def run_strict_validation():
             else:
                 print("[SUCCESS] Concept B0 is perfectly compositional and context-independent!")
                 
-        # Автоматический барьер качества (Sanity Gate):
-        assert avg_drift == 0.0, f"FAIL: Забывание! Drift={avg_drift}"
-        assert match_sim > 0.93, f"FAIL: B0 не выучил семантику! Sim={match_sim:.4f}"
-        assert neg_sim < 0.45, f"FAIL: Коллапс пространства! Neg Sim={neg_sim:.4f}"
-        assert (match_sim - neg_sim) > 0.50, "FAIL: Недостаточная избирательность!"
-        print("\n>>> ВСЕ ПРОВЕРКИ ПРОЙДЕНЫ: Код математически чист. <<<")
+    # Автоматический барьер качества (Sanity Gate):
+    assert avg_drift == 0.0, f"FAIL: Забывание! Drift={avg_drift}"
+    assert match_sim > 0.93, f"FAIL: B0 не выучил семантику! Sim={match_sim:.4f}"
+    assert neg_sim < 0.45, f"FAIL: Коллапс пространства! Neg Sim={neg_sim:.4f}"
+    assert (match_sim - neg_sim) > 0.50, "FAIL: Недостаточная избирательность!"
+    print("\n>>> ВСЕ ПРОВЕРКИ ПРОЙДЕНЫ: Код математически чист. <<<")
+    
+    print("\n6. HIERARCHICAL COMPRESSION (B0 B0 -> B1 / C0)")
+    # 1. Distill B0 B0 -> B1
+    sleep_engine.observe(['B0', 'B0'])
+    sleep_engine.sleep_phase(rem_iterations=300)
+    
+    # 2. Test semantic match between 'B0 B0' and 'B1' (which acts as C0)
+    c0_name = f'B{sleep_engine.new_symbol_count - 1}'
+    
+    target_spikes_c0 = encoder.encode("B0 B0")
+    student_spikes_c0 = encoder.encode(c0_name)
+    
+    _, _, u_pre_target_c0 = model(target_spikes_c0)
+    _, _, u_pre_student_c0 = model(student_spikes_c0)
+    
+    term_target_c0 = u_pre_target_c0[:, -1, :]
+    term_student_c0 = u_pre_student_c0[:, -1, :]
+    
+    term_target_c0_cent = term_target_c0 - term_target_c0.mean(dim=1, keepdim=True)
+    term_student_c0_cent = term_student_c0 - term_student_c0.mean(dim=1, keepdim=True)
+    
+    sim_c0 = nn.functional.cosine_similarity(term_target_c0_cent, term_student_c0_cent).item()
+    
+    print(f"Hierarchical Match Similarity (B0 B0 vs {c0_name}, centered): {sim_c0:.4f}")
+    
+    if sim_c0 > 0.90:
+        print(f"[SUCCESS] 2nd-order concept {c0_name} successfully distilled 'B0 B0' into 6 ticks!")
+    else:
+        print(f"[WARNING] 2nd-order compression failed. Sim: {sim_c0:.4f}")
 
 if __name__ == "__main__":
     run_strict_validation()
